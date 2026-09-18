@@ -19,18 +19,20 @@ from __future__ import annotations
 import json
 import re
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
 from typesafe_sdk import Noul
 
-from jevx import MissingKeyError, ProviderError, header, open_client
+from jevx import JevClient, MissingKeyError, ProviderError, header, open_client
 
 CORPUS_PATH = Path(__file__).resolve().parents[1] / "data" / "help_center.json"
 
-#: OpenRouter's published input price for typesafe/jev-1.13, in dollars per
-#: token. Output is billed at zero. Used only to estimate the cost of a run.
+#: OpenRouter's published input price for typesafe/jev-1.13 as of 2026-09-18,
+#: in dollars per token. Output is billed at zero. Used only to estimate the
+#: cost of a run, and only when OpenRouter is the provider.
 INPUT_DOLLARS_PER_TOKEN = 0.042 / 1_000_000
 
 #: Concurrent requests. Each pair is an independent call, so this is just how
@@ -126,13 +128,33 @@ def keyword_rank(question: str, passages: list[Passage]) -> list[str]:
         passages: Every candidate passage.
 
     Returns:
-        All passage ids, best first. Ties break by id so runs are comparable.
+        All passage ids, best first. Ties break by id so runs are comparable --
+        but see `rank_bounds`: a tie-broken position is not a judgement, and
+        reading it as one overstates what the baseline actually said.
+    """
+    return rank_by_score(keyword_scores(question, passages))
+
+
+def keyword_scores(question: str, passages: list[Passage]) -> dict[str, float]:
+    """Score every passage by distinct query-word overlap.
+
+    No length normalisation, so longer passages have more chances to match.
+    The stopword list is also short, so common words like "have" carry weight
+    they do not deserve. Both are acceptable in a baseline whose job is to be
+    plainly worse than the re-ranker, but they are biases, not neutrality.
+
+    Args:
+        question: The customer's question.
+        passages: Every candidate passage.
+
+    Returns:
+        Overlap count per passage id.
     """
     wanted = _terms(question)
-    scored = {
-        passage.id: len(wanted & _terms(f"{passage.title} {passage.text}")) for passage in passages
+    return {
+        passage.id: float(len(wanted & _terms(f"{passage.title} {passage.text}")))
+        for passage in passages
     }
-    return rank_by_score(scored)
 
 
 def rank_by_score(scores: dict[str, float]) -> list[str]:
@@ -145,6 +167,49 @@ def rank_by_score(scores: dict[str, float]) -> list[str]:
         The ids, best first, with ties broken by id for determinism.
     """
     return sorted(scores, key=lambda key: (-scores[key], key))
+
+
+def rank_bounds(scores: dict[str, float], target: str) -> tuple[int, int]:
+    """The best and worst rank `target` could hold, given ties.
+
+    A scorer that assigns the same value to many candidates has not ranked
+    them; the sort order among them comes from the tie-break, not the scorer.
+    Collapsing that to a single number turns "no opinion" into "wrong answer".
+
+    Args:
+        scores: Score per id.
+        target: The id to locate.
+
+    Returns:
+        The best and worst positions, 1-based. Equal when nothing ties.
+    """
+    value = scores[target]
+    strictly_above = sum(1 for other in scores.values() if other > value)
+    tied = sum(1 for other in scores.values() if other == value)
+    return strictly_above + 1, strictly_above + tied
+
+
+def hit_rate_bounds(
+    scores: dict[str, dict[str, float]], golds: dict[str, str], k: int
+) -> tuple[float, float]:
+    """Top-`k` hit rate if every tie broke against you, and if every tie broke for you.
+
+    Args:
+        scores: Score per passage id, per query id.
+        golds: The correct passage id per query id.
+        k: How far down the list to look.
+
+    Returns:
+        The pessimistic and optimistic hit rates.
+    """
+    if not scores:
+        return 0.0, 0.0
+    pessimistic = optimistic = 0
+    for query_id, per_passage in scores.items():
+        best, worst = rank_bounds(per_passage, golds[query_id])
+        pessimistic += worst <= k
+        optimistic += best <= k
+    return pessimistic / len(scores), optimistic / len(scores)
 
 
 def hit_at_k(ranking: list[str], gold: str, k: int) -> bool:
@@ -169,20 +234,37 @@ def hit_rate(rankings: dict[str, list[str]], golds: dict[str, str], k: int) -> f
     return hits / len(rankings)
 
 
-def _score_with_usage(client, query: Query, passage: Passage) -> tuple[float, int]:
-    """Score one pair, also reporting what it cost in input tokens."""
-    response = client.ask(
-        {
-            "question": query.text,
-            "article": {"title": passage.title, "text": passage.text},
-        },
-        {"relevant": RELEVANCE},
-    )
-    return response.nouls["relevant"].noul, response.usage.input_tokens or 0
+def _score_with_usage(client: JevClient, query: Query, passage: Passage) -> tuple[float, int]:
+    """Score one pair, also reporting what it cost in input tokens.
+
+    One pair in a hundred failing anonymously is worse than useless, so both
+    failure modes name the pair: a provider error, and an answer that arrives
+    without the noul we asked for (`nouls` filters by type, so a mistyped
+    answer shows up as a missing key rather than a wrong value).
+    """
+    try:
+        response = client.ask(
+            {
+                "question": query.text,
+                "article": {"title": passage.title, "text": passage.text},
+            },
+            {"relevant": RELEVANCE},
+        )
+        return response.nouls["relevant"].noul, response.usage.input_tokens or 0
+    except ProviderError as error:
+        raise ProviderError(f"{query.id}/{passage.id}: {error}") from error
+    except KeyError as error:
+        raise ProviderError(
+            f"{query.id}/{passage.id}: answer contained no 'relevant' noul"
+        ) from error
 
 
-def score_passage(client, query: Query, passage: Passage) -> float:
+def score_passage(client: JevClient, query: Query, passage: Passage) -> float:
     """Ask Jev whether one passage answers one question.
+
+    The scoring run itself goes through `_score_with_usage`, which also reports
+    tokens. This is the plain single-pair entry point, for tests and for
+    anyone reading the file top to bottom.
 
     Args:
         client: An open Jev client.
@@ -196,12 +278,17 @@ def score_passage(client, query: Query, passage: Passage) -> float:
     return score
 
 
-def score_corpus(client, corpus: Corpus) -> tuple[dict[str, dict[str, float]], int]:
+def score_corpus(client: JevClient, corpus: Corpus) -> tuple[dict[str, dict[str, float]], int]:
     """Score every (query, passage) pair, concurrently.
 
     Each pair is an independent request -- they cannot be batched, because
     batching shares one state across many questions and here the state differs
     per call. Concurrency is what recovers the wall-clock time instead.
+
+    Safe to run concurrently on the OpenRouter path, where the client holds
+    only configuration and every call opens its own connection. The native
+    TypeSafe path shares one SDK client across threads and has not been
+    exercised that way here.
 
     Args:
         client: An open Jev client.
@@ -232,6 +319,7 @@ def main() -> int:
     corpus = load_corpus()
     by_id = {passage.id: passage for passage in corpus.passages}
     golds = {query.id: query.gold for query in corpus.queries}
+    call_count = len(corpus.queries) * len(corpus.passages)
 
     try:
         client, provider = open_client()
@@ -242,29 +330,44 @@ def main() -> int:
     print(header("02 · Re-ranking", provider))
     print(
         f"{len(corpus.queries)} questions × {len(corpus.passages)} articles "
-        f"= {len(corpus.queries) * len(corpus.passages)} calls, {MAX_WORKERS} at a time\n"
+        f"= {call_count} calls, {MAX_WORKERS} at a time\n"
     )
 
-    baseline = {query.id: keyword_rank(query.text, corpus.passages) for query in corpus.queries}
-    call_count = len(corpus.queries) * len(corpus.passages)
+    keyword = {query.id: keyword_scores(query.text, corpus.passages) for query in corpus.queries}
+    baseline = {query_id: rank_by_score(scores) for query_id, scores in keyword.items()}
+
+    started = time.monotonic()
     try:
         with client:
             scores, total_tokens = score_corpus(client, corpus)
     except ProviderError as error:
         print(f"{error}\n", file=sys.stderr)
         return 1
+    elapsed = time.monotonic() - started
 
     reranked = {query_id: rank_by_score(pairs) for query_id, pairs in scores.items()}
 
     for query in corpus.queries:
-        before = baseline[query.id]
-        after = reranked[query.id]
-        moved = before.index(query.gold) + 1, after.index(query.gold) + 1
-        verdict = "→" if moved[0] == moved[1] else ("↑" if moved[1] < moved[0] else "↓")
-        print(f'{query.id}  "{query.text[:62]}..."')
+        before_rank = baseline[query.id].index(query.gold) + 1
+        after_rank = reranked[query.id].index(query.gold) + 1
+        best, worst = rank_bounds(keyword[query.id], query.gold)
+        arrow = "→" if before_rank == after_rank else ("↑" if after_rank < before_rank else "↓")
+
+        print(f'{query.id}  "{query.text}"')
         print(f"  gold {query.gold} ({by_id[query.gold].title})")
-        print(f"  keyword rank {moved[0]}   {verdict}   re-ranked {moved[1]}")
-        for passage_id in after[:3]:
+        if best == worst:
+            keyword_note = f"keyword rank {before_rank}"
+        else:
+            # A tie is the scorer declining to choose. Say so, rather than
+            # letting the alphabetical tie-break masquerade as a judgement.
+            tied_with = worst - best
+            keyword_note = (
+                f"keyword scored {keyword[query.id][query.gold]:.0f}, tied with {tied_with} "
+                f"other{'s' if tied_with != 1 else ''} (rank {best}–{worst}); "
+                f"id tie-break put it {before_rank}"
+            )
+        print(f"  {keyword_note}   {arrow}   re-ranked {after_rank}")
+        for passage_id in reranked[query.id][:3]:
             mark = " ← gold" if passage_id == query.gold else ""
             print(
                 f"    {scores[query.id][passage_id]:.2f}  {passage_id}  "
@@ -274,12 +377,18 @@ def main() -> int:
 
     print("─" * 72)
     for k in (1, 3):
-        before = hit_rate(baseline, golds, k)
+        low, high = hit_rate_bounds(keyword, golds, k)
         after = hit_rate(reranked, golds, k)
-        print(f"  top-{k}   keyword {before:.0%}   re-ranked {after:.0%}")
+        spread = f"{low:.0%}" if low == high else f"{low:.0%}–{high:.0%}"
+        print(f"  top-{k}   keyword {spread}   re-ranked {after:.0%}")
+    print("          (keyword shown as a range: ties decide it, and a tie is not a ranking)")
 
-    estimated = total_tokens * INPUT_DOLLARS_PER_TOKEN
-    print(f"\n  {call_count} calls, {total_tokens:,} input tokens, ~${estimated:.4f}")
+    cost = (
+        f", ~${total_tokens * INPUT_DOLLARS_PER_TOKEN:.4f}"
+        if provider.name == "openrouter"
+        else ""
+    )
+    print(f"\n  {call_count} calls, {total_tokens:,} input tokens{cost}, {elapsed:.1f}s")
     print(
         f"  {len(corpus.queries)} queries is a demonstration, not a benchmark. "
         "See the cookbook for measured results on a real corpus."

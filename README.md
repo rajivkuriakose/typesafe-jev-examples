@@ -137,7 +137,7 @@ RELEVANCE = Noul(
         "true":  "The article resolves the customer's situation, including when it "
                  "does so by explaining why the thing they want is unavailable to them.",
         "false": "The article is on a related topic or shares vocabulary with the "
-                 "question, but does not tell the customer what to do about it.",
+                 "question, but does not tell the customer what to do about their situation.",
     },
 )
 ```
@@ -152,37 +152,55 @@ sorts directly.
 keyword baseline, then re-ranks them with Jev:
 
 ```
-  top-1   keyword 67%   re-ranked 100%
-  top-3   keyword 67%   re-ranked 100%
-  156 calls, 69,474 input tokens, ~$0.0029, ~16s
+  top-1   keyword 67%–83%   re-ranked 100%
+  top-3   keyword 67%–83%   re-ranked 100%
+          (keyword shown as a range: ties decide it, and a tie is not a ranking)
+
+  156 calls, 69,474 input tokens, ~$0.0029, 15.2s
 ```
 
-**Read that honestly.** Six queries reaching 100% is not evidence of anything —
-it is four queries the baseline already ranked first, plus two it did not:
+**The range is the honest part, and the first version of this example got it
+wrong.** It reported a flat 67% and described the two improved queries as cases
+where keyword search ranked the answer badly. It had not:
 
 ```
-q5  "our server was down for an hour, did we lose the events"
-    keyword rank 4    ->  re-ranked 1
+q5  "our server was down for about an hour, did we permanently lose the events from that window"
+  keyword scored 1, tied with 5 others (rank 1–6); id tie-break put it 4   ↑   re-ranked 1
+
 q6  "we are moving to another provider but I need everything we have first"
-    keyword rank 25   ->  re-ranked 1      (of 26)
+  keyword scored 0, tied with 17 others (rank 9–26); id tie-break put it 25   ↑   re-ranked 1
 ```
 
-q6 is the honest illustration. The answer is *Exporting your data*, which shares
-almost no vocabulary with the question, so word matching buried it second-to-last.
-That is the failure mode a re-ranker exists to fix, and no amount of tuning the
-keyword scorer addresses it.
+On q5 the gold article was tied *for first place*; alphabetical tie-breaking put
+it fourth. On q6 it scored zero along with seventeen others. In both cases the
+baseline expressed **no opinion**, and `sorted()` supplied the rank. Reporting
+that as "rank 4" and "rank 25" silently converted *no signal* into *wrong
+answer* — which flattered the comparison. Hence `rank_bounds`, and hence the
+range.
 
-Worth recording that a prediction failed here too: the corpus was built expecting
-keyword search to be fooled by *"we need single sign-on but there is no option in
-settings"* — grabbing the SSO setup guide instead of the pricing page that
-explains SSO is Enterprise-only. It was not fooled; the pricing page happens to
-contain both "single sign-on" and "settings". Jev still separated them (0.94 vs
-0.77), but the baseline got there first.
+The real lesson survives, and is sharper than the one it replaces: on two of six
+questions, word overlap produced nothing to rank by at all, and the re-ranker
+turned that into a usable ordering. That is the failure mode paraphrase causes —
+q6's answer shares *no* content words with the question — and no amount of
+tuning a keyword scorer fixes it.
 
-The fixture was written before any baseline was run, and no query was changed
-afterwards. It demonstrates the *pattern*; for measured results on a real corpus
-see TypeSafe's [re-ranking cookbook](https://docs.typesafe.ai/cookbooks/rerank_typesafe),
-which reports top-1 going 5% → 18% over 1,200 calls on legal retrieval.
+Two further caveats, since this is a demonstration and not a benchmark:
+
+- **The baseline is crude and biased, in its own favour.** `keyword_scores` does
+  no length normalisation, so longer articles match more; all six gold passages
+  are at or above the mean length. That makes the comparison conservative rather
+  than rigged, but it is not neutral.
+- **Six queries reaching 100% means very little.** Four were already correct.
+
+**On provenance.** The 26 passages were written as a plausible help center before
+any baseline was run, and no passage was changed afterwards. The six queries were
+then written as customer phrasings of problems those articles solve — deliberately
+in a customer's words rather than the documentation's, which is what makes q5 and
+q6 hard for word matching. That is a real retrieval difficulty, not a manufactured
+one, but it is a choice, and you should weigh the result knowing it was made. For
+measured results on a real corpus with an established baseline, see TypeSafe's
+[re-ranking cookbook](https://docs.typesafe.ai/cookbooks/rerank_typesafe): top-1
+5% → 18% over 1,200 calls on legal retrieval.
 
 ## Testing
 

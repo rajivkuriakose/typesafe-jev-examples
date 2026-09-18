@@ -8,11 +8,14 @@ with no key and no network.
 
 from __future__ import annotations
 
+import io
+
 import pytest
 from typesafe_sdk import Choice, Noul, Score
 
 from jevx.client import (
     OPENROUTER_DECISIONS_URL,
+    ProviderError,
     OPENROUTER_MODEL_DEFAULT,
     TYPESAFE_MODEL_DEFAULT,
     MissingKeyError,
@@ -103,3 +106,96 @@ def test_serialised_questions_keep_their_type_discriminator():
 def test_serialisation_drops_unset_fields_rather_than_sending_nulls():
     serialised = _serialise_questions({"b": Noul(instructions="Is it so?")})
     assert None not in serialised["b"].values()
+
+
+# --- transient failure handling -------------------------------------------
+
+
+def _http_error(code):
+    import urllib.error
+
+    return urllib.error.HTTPError(
+        url="https://openrouter.ai/api/alpha/decisions",
+        code=code,
+        msg="boom",
+        hdrs=None,
+        fp=io.BytesIO(b'{"error":{"message":"boom"}}'),
+    )
+
+
+class _Body(io.BytesIO):
+    """A urlopen context-manager stand-in."""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        self.close()
+
+
+GOOD_BODY = (
+    b'{"model":"typesafe/jev-1.13","answers":{"relevant":{"type":"noul","noul":0.8}},'
+    b'"usage":{"input_tokens":10,"output_tokens":2}}'
+)
+
+
+def test_a_transient_upstream_error_is_retried(monkeypatch):
+    """A single flaky 520 must not kill a 156-call run."""
+    from jevx import client as client_module
+
+    attempts = []
+
+    def flaky(request, timeout=None):
+        attempts.append(1)
+        if len(attempts) < 3:
+            raise _http_error(520)
+        return _Body(GOOD_BODY)
+
+    monkeypatch.setattr(client_module.urllib.request, "urlopen", flaky)
+    monkeypatch.setattr(client_module.time, "sleep", lambda seconds: None)
+
+    provider = Provider(name="openrouter", model="m", api_key="k", endpoint="https://x.invalid")
+    response = client_module.OpenRouterClient(provider).ask({"a": 1}, {})
+
+    assert len(attempts) == 3
+    assert response.nouls["relevant"].noul == 0.8
+
+
+def test_a_client_error_is_not_retried(monkeypatch):
+    """A 400 means the request is wrong; sending it again just costs money."""
+    from jevx import client as client_module
+
+    attempts = []
+
+    def bad_request(request, timeout=None):
+        attempts.append(1)
+        raise _http_error(400)
+
+    monkeypatch.setattr(client_module.urllib.request, "urlopen", bad_request)
+    monkeypatch.setattr(client_module.time, "sleep", lambda seconds: None)
+
+    provider = Provider(name="openrouter", model="m", api_key="k", endpoint="https://x.invalid")
+    with pytest.raises(ProviderError, match="400"):
+        client_module.OpenRouterClient(provider).ask({"a": 1}, {})
+
+    assert len(attempts) == 1
+
+
+def test_retries_are_finite(monkeypatch):
+    """A persistently broken upstream fails rather than looping."""
+    from jevx import client as client_module
+
+    attempts = []
+
+    def always_down(request, timeout=None):
+        attempts.append(1)
+        raise _http_error(503)
+
+    monkeypatch.setattr(client_module.urllib.request, "urlopen", always_down)
+    monkeypatch.setattr(client_module.time, "sleep", lambda seconds: None)
+
+    provider = Provider(name="openrouter", model="m", api_key="k", endpoint="https://x.invalid")
+    with pytest.raises(ProviderError, match="503"):
+        client_module.OpenRouterClient(provider).ask({"a": 1}, {})
+
+    assert len(attempts) == client_module.MAX_ATTEMPTS

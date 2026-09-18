@@ -1,5 +1,5 @@
 {
-  "_note": "A fictional SaaS help center. Written as a plausible set of articles before any baseline or reranker was run against it, so the corpus is not tuned to flatter either. Several articles deliberately share vocabulary because real help centers do.",
+  "_note": "A fictional SaaS help center. The passages were written as a plausible set of articles before any baseline or re-ranker was run, and none was changed afterwards. Several articles share vocabulary because real help centers do; none is a planted decoy. The queries were written afterwards, as customer phrasings of problems these articles solve -- in a customer's words rather than the documentation's, which is what makes q5 and q6 hard for word matching. That is a real retrieval difficulty but it is a choice, and the README says so.",
   "passages": [
     {
       "id": "p01",

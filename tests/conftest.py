@@ -1,4 +1,4 @@
-"""Fixtures that let the policy tests run with no key, no network, no model.
+"""Fixtures and loaders shared by the example tests.
 
 The routing policy is ordinary code. It takes typed answers and returns a
 decision, so it can be tested directly by handing it answers. These fakes

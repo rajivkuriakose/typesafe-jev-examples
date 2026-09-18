@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -54,6 +55,17 @@ OPENROUTER_MODEL_DEFAULT = "typesafe/jev-1.13"
 TYPESAFE_MODEL_DEFAULT = "jev-latest"
 
 DEFAULT_TIMEOUT_SECONDS = 60
+
+#: Statuses worth sending the same request again for: rate limiting, and the
+#: gateway and origin errors a hosted service emits transiently. A 4xx other
+#: than 429 means the request itself is wrong, so retrying only costs money.
+RETRY_STATUSES = frozenset({408, 429, 500, 502, 503, 504, 520, 521, 522, 524})
+
+#: Total attempts, not retries after the first.
+MAX_ATTEMPTS = 3
+
+#: First backoff, doubled each attempt.
+BACKOFF_SECONDS = 0.5
 
 
 class MissingKeyError(RuntimeError):
@@ -161,14 +173,7 @@ class OpenRouterClient:
             },
             method="POST",
         )
-        try:
-            with urllib.request.urlopen(request, timeout=self._timeout) as response:
-                body = response.read().decode()
-        except urllib.error.HTTPError as error:
-            detail = error.read().decode()[:500]
-            raise ProviderError(f"OpenRouter returned {error.code}: {detail}") from error
-        except urllib.error.URLError as error:
-            raise ProviderError(f"Could not reach OpenRouter: {error.reason}") from error
+        body = self._read_with_retries(request)
 
         # A 2xx with an unexpected shape is still a provider failure, not a bug
         # in the caller, so it leaves here as ProviderError like everything else.
@@ -178,6 +183,40 @@ class OpenRouterClient:
             raise ProviderError(
                 f"OpenRouter returned a body that is not a System One response: {body[:300]}"
             ) from error
+
+    def _read_with_retries(self, request: urllib.request.Request) -> str:
+        """Send the request, retrying the failures that are worth retrying.
+
+        A long fan-out makes rare transient errors near-certain: at 156 calls a
+        one-in-two-hundred gateway blip is likely to land, and without this the
+        whole run dies on it. Retries are finite and only for statuses that a
+        second identical request could plausibly answer.
+
+        Args:
+            request: The prepared POST.
+
+        Returns:
+            The response body.
+
+        Raises:
+            ProviderError: When the request fails and is not worth retrying, or
+                when the attempts are exhausted.
+        """
+        for attempt in range(1, MAX_ATTEMPTS + 1):
+            try:
+                with urllib.request.urlopen(request, timeout=self._timeout) as response:
+                    return response.read().decode()
+            except urllib.error.HTTPError as error:
+                retryable = error.code in RETRY_STATUSES
+                if not retryable or attempt == MAX_ATTEMPTS:
+                    detail = error.read().decode()[:500]
+                    raise ProviderError(f"OpenRouter returned {error.code}: {detail}") from error
+            except urllib.error.URLError as error:
+                if attempt == MAX_ATTEMPTS:
+                    raise ProviderError(f"Could not reach OpenRouter: {error.reason}") from error
+            time.sleep(BACKOFF_SECONDS * 2 ** (attempt - 1))
+
+        raise ProviderError("OpenRouter could not be reached")  # pragma: no cover
 
     def close(self) -> None:
         """Nothing to release: each request opens its own connection."""
