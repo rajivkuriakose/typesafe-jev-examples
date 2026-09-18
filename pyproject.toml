@@ -26,7 +26,7 @@ packages = ["src/jevx"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+addopts = "-q -m 'not live'"
 pythonpath = ["."]
 markers = [
     "live: sends a real request to Jev over the network; needs a key",

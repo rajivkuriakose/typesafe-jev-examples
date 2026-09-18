@@ -55,7 +55,7 @@ make run                    # triages three sample tickets against Jev
 Get an OpenRouter key at [openrouter.ai/settings/keys](https://openrouter.ai/settings/keys).
 `.env` is gitignored and will not be committed; `.env.example` is the template.
 
-## The example
+## Example 01 · Ticket triage
 
 [`examples/01_ticket_triage.py`](examples/01_ticket_triage.py) routes a support
 ticket using seven narrow questions answered in a **single parallel request**.
@@ -111,13 +111,87 @@ threshold and nothing needs re-running.
 **Give the model a way to say "none of these".** The `other` option exists
 because a model cannot choose a value you never offered it.
 
+## Example 02 · Re-ranking
+
+[`examples/02_rerank.py`](examples/02_rerank.py) is the mirror image of 01, and
+the contrast is the point:
+
+| | state | questions | requests |
+|---|---|---|---|
+| **01** triage | one ticket | seven | one |
+| **02** re-rank | one article each | one | one per candidate, concurrent |
+
+Questions batch into a single request only when they share the same state. Here
+every candidate *is* different state, so they cannot batch — the calls fan out
+across a thread pool instead, and the returned probability is the sort key.
+
+One `Noul` per (question, article) pair, sorted descending:
+
+```python
+RELEVANCE = Noul(
+    instructions=(
+        "The customer asked `question` and this support article `article` was "
+        "retrieved. Does the article actually answer what the customer asked?"
+    ),
+    criteria={
+        "true":  "The article resolves the customer's situation, including when it "
+                 "does so by explaining why the thing they want is unavailable to them.",
+        "false": "The article is on a related topic or shares vocabulary with the "
+                 "question, but does not tell the customer what to do about it.",
+    },
+)
+```
+
+A `Noul` rather than a `Score` because there is no rubric to place a candidate
+on — either the article answers the question or it does not — and a probability
+sorts directly.
+
+### What it measures
+
+`make rerank` ranks 26 help-center articles against 6 customer questions with a
+keyword baseline, then re-ranks them with Jev:
+
+```
+  top-1   keyword 67%   re-ranked 100%
+  top-3   keyword 67%   re-ranked 100%
+  156 calls, 69,474 input tokens, ~$0.0029, ~16s
+```
+
+**Read that honestly.** Six queries reaching 100% is not evidence of anything —
+it is four queries the baseline already ranked first, plus two it did not:
+
+```
+q5  "our server was down for an hour, did we lose the events"
+    keyword rank 4    ->  re-ranked 1
+q6  "we are moving to another provider but I need everything we have first"
+    keyword rank 25   ->  re-ranked 1      (of 26)
+```
+
+q6 is the honest illustration. The answer is *Exporting your data*, which shares
+almost no vocabulary with the question, so word matching buried it second-to-last.
+That is the failure mode a re-ranker exists to fix, and no amount of tuning the
+keyword scorer addresses it.
+
+Worth recording that a prediction failed here too: the corpus was built expecting
+keyword search to be fooled by *"we need single sign-on but there is no option in
+settings"* — grabbing the SSO setup guide instead of the pricing page that
+explains SSO is Enterprise-only. It was not fooled; the pricing page happens to
+contain both "single sign-on" and "settings". Jev still separated them (0.94 vs
+0.77), but the baseline got there first.
+
+The fixture was written before any baseline was run, and no query was changed
+afterwards. It demonstrates the *pattern*; for measured results on a real corpus
+see TypeSafe's [re-ranking cookbook](https://docs.typesafe.ai/cookbooks/rerank_typesafe),
+which reports top-1 going 5% → 18% over 1,200 calls on legal retrieval.
+
 ## Testing
 
 The routing policy is pure code: answers in, decision out. It is tested directly,
 with no key, no network and no model.
 
 ```sh
-make test
+make test        # offline: no key, no network
+make test-live   # also the tests that call Jev
 ```
 
 That split is the point. Model quality is measured against your own data; policy
@@ -171,11 +245,13 @@ listing above.
 ## Layout
 
 ```
-examples/01_ticket_triage.py   the worked example
+examples/01_ticket_triage.py   many questions, one state, one request
+examples/02_rerank.py          one question, many states, concurrent requests
+data/help_center.json          fixture corpus for 02
 src/jevx/client.py             provider selection and transport
 src/jevx/report.py             printing helpers
 scripts/probe_openrouter.py    discover how OpenRouter serves Jev
-tests/                         offline policy tests
+tests/                         offline tests, plus one `live` test
 ```
 
 ## Reference

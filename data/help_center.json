@@ -1,0 +1,167 @@
+{
+  "_note": "A fictional SaaS help center. Written as a plausible set of articles before any baseline or reranker was run against it, so the corpus is not tuned to flatter either. Several articles deliberately share vocabulary because real help centers do.",
+  "passages": [
+    {
+      "id": "p01",
+      "title": "Payout schedules",
+      "text": "Payouts run every weekday at 09:00 UTC. Funds from a card charge become available for payout two business days after the charge settles, so a Monday sale typically pays out on Wednesday."
+    },
+    {
+      "id": "p02",
+      "title": "Changing your payout bank account",
+      "text": "Updating the bank account on file re-triggers identity verification on the account. Payouts are held for two to three business days while verification completes, then resume automatically with the held balance included in the next run."
+    },
+    {
+      "id": "p03",
+      "title": "Why a payout failed",
+      "text": "A payout is marked failed when the receiving bank rejects it, usually for a closed account, a name mismatch, or an unsupported account type. Failed amounts return to your available balance within one business day."
+    },
+    {
+      "id": "p04",
+      "title": "Payout currency and conversion",
+      "text": "Payouts settle in your account's default currency. When a charge is taken in another currency we convert at the daily reference rate and show both amounts on the payout detail page."
+    },
+    {
+      "id": "p05",
+      "title": "Finding your invoices",
+      "text": "Every invoice is available under Billing, Documents. Invoices are generated on the first of the month and remain downloadable as PDFs for seven years."
+    },
+    {
+      "id": "p06",
+      "title": "Changing your billing cycle",
+      "text": "You can switch between monthly and annual billing at any time from Billing, Plan. Switching to annual applies a prorated credit for the unused portion of the current month."
+    },
+    {
+      "id": "p07",
+      "title": "Refunds and how long they take",
+      "text": "Refunds can be issued in full or in part from the charge detail page. The funds leave your balance immediately, but most banks take five to ten business days to show the credit to the cardholder."
+    },
+    {
+      "id": "p08",
+      "title": "Responding to a disputed charge",
+      "text": "When a cardholder disputes a charge, the amount and a dispute fee are debited from your balance while the case is open. You have seven days to submit evidence before the network decides."
+    },
+    {
+      "id": "p09",
+      "title": "Upgrading or downgrading your plan",
+      "text": "Plan changes take effect immediately. Upgrades are prorated for the remainder of the billing period; downgrades apply a credit against your next invoice rather than refunding the difference."
+    },
+    {
+      "id": "p10",
+      "title": "What each plan includes",
+      "text": "Starter and Team cover core billing, the API, and webhooks. SAML single sign-on, audit logs, and custom data retention are available only on Enterprise. Contact sales to move to Enterprise; the option will not appear in your settings on lower plans."
+    },
+    {
+      "id": "p11",
+      "title": "Setting up SAML single sign-on",
+      "text": "Under Settings, Authentication, paste your identity provider's metadata URL and map the email attribute. Enforce single sign-on once at least one administrator has signed in successfully through the provider."
+    },
+    {
+      "id": "p12",
+      "title": "Two-factor authentication",
+      "text": "Each member can enable two-factor authentication from their own profile using an authenticator app. Administrators can require it for everyone from Settings, Security."
+    },
+    {
+      "id": "p13",
+      "title": "Resetting a forgotten password",
+      "text": "Use the reset link on the sign-in page. The email arrives within a few minutes and the link expires after one hour. Accounts that sign in through an identity provider do not have a password to reset."
+    },
+    {
+      "id": "p14",
+      "title": "Inviting team members",
+      "text": "Invite colleagues from Settings, Team. An invitation expires after fourteen days and can be resent. Invited members do not consume a seat until they accept."
+    },
+    {
+      "id": "p15",
+      "title": "Roles and permissions",
+      "text": "Admins manage billing, members, and security settings. Developers can create API keys and configure webhooks. Analysts have read-only access to reports and cannot see full card details."
+    },
+    {
+      "id": "p16",
+      "title": "Removing a member and what happens to their seat",
+      "text": "Removing someone from Settings, Team revokes their access immediately, but the seat stays on your subscription until the end of the current billing period. To stop being charged for it, reduce your seat count on the Plan page after removing them."
+    },
+    {
+      "id": "p17",
+      "title": "Creating an API key",
+      "text": "Generate keys under Developers, API keys. A key is shown once at creation and cannot be retrieved afterwards. Use the test key against sandbox data before switching to live."
+    },
+    {
+      "id": "p18",
+      "title": "Rotating and revoking API keys",
+      "text": "Create the replacement key first, deploy it, then revoke the old one so there is no gap in service. Revocation takes effect within a few seconds and cannot be undone."
+    },
+    {
+      "id": "p19",
+      "title": "Rate limits",
+      "text": "The API allows 100 requests per second per key, burstable to 200. Exceeding the limit returns HTTP 429 with a Retry-After header. Back off and retry rather than reissuing immediately, and spread bulk jobs across a longer window."
+    },
+    {
+      "id": "p20",
+      "title": "Configuring a webhook endpoint",
+      "text": "Add your HTTPS endpoint under Developers, Webhooks and choose which events to receive. Verify the signature on every request using the signing secret shown when the endpoint is created."
+    },
+    {
+      "id": "p21",
+      "title": "What happens when your endpoint is unreachable",
+      "text": "Deliveries that fail are retried with exponential backoff for up to 72 hours, so an outage of a few hours loses nothing once your endpoint recovers. Events still undelivered after 72 hours are dropped and must be fetched from the events API."
+    },
+    {
+      "id": "p22",
+      "title": "Connecting your Stripe account",
+      "text": "From Settings, Integrations, choose Stripe and complete the OAuth flow. The connection needs the read_write scope to create charges on your behalf."
+    },
+    {
+      "id": "p23",
+      "title": "Stripe connection errors",
+      "text": "A connection shows as degraded when our calls to Stripe are rejected, most often because the authorisation was revoked in the Stripe dashboard or the connected account is missing required business details. Reconnect from Settings, Integrations to restore it."
+    },
+    {
+      "id": "p24",
+      "title": "Exporting your data",
+      "text": "Request a full export from Settings, Data. The archive covers customers, charges, payouts, and events as CSV, and a download link is emailed within a few hours. Request the export before closing the account, as data is unrecoverable afterwards."
+    },
+    {
+      "id": "p25",
+      "title": "Closing your account",
+      "text": "Closing an account under Settings, Data is permanent and takes effect once the final invoice settles. Open disputes must be resolved first. All data is deleted after thirty days."
+    },
+    {
+      "id": "p26",
+      "title": "Email notification settings",
+      "text": "Choose which events email you from your profile under Notifications. Failed payouts and new disputes always notify account administrators and cannot be switched off."
+    }
+  ],
+  "queries": [
+    {
+      "id": "q1",
+      "text": "my payouts stopped arriving right after I switched the bank account on file",
+      "gold": "p02"
+    },
+    {
+      "id": "q2",
+      "text": "someone left the company last month and we are still paying for them",
+      "gold": "p16"
+    },
+    {
+      "id": "q3",
+      "text": "our integration started getting 429 responses this morning during a bulk import",
+      "gold": "p19"
+    },
+    {
+      "id": "q4",
+      "text": "we need single sign-on for our company but there is no option for it anywhere in settings",
+      "gold": "p10"
+    },
+    {
+      "id": "q5",
+      "text": "our server was down for about an hour, did we permanently lose the events from that window",
+      "gold": "p21"
+    },
+    {
+      "id": "q6",
+      "text": "we are moving to another provider but I need everything we have first",
+      "gold": "p24"
+    }
+  ]
+}
