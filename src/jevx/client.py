@@ -17,7 +17,14 @@ dedicated endpoint, `POST /api/alpha/decisions`, rather than through
 The SDK builds its own `/v1/systemone` path, so it cannot be repointed there
 with `base_url` alone. `OpenRouterClient` posts to the decisions endpoint
 directly and parses the reply with the SDK's own `SystemOneResponse`, which
-means both paths return the identical typed object.
+means both providers return the identical typed object.
+
+One difference remains. The SDK's internal decoder drops answer types it does
+not recognise before validating, so a future primitive would be ignored rather
+than fatal. Parsing the body directly, as the OpenRouter path must, keeps
+pydantic's strictness: an unknown answer type raises instead. That is the right
+trade for an examples repository -- surfacing the surprise beats hiding it --
+but it does make this path marginally less forgiving than the native one.
 """
 
 from __future__ import annotations
@@ -28,8 +35,10 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
+from types import TracebackType
 from typing import Any, Protocol
 
+import pydantic
 from dotenv import load_dotenv
 from typesafe_sdk import SystemOneResponse, TypeSafeClient
 
@@ -41,7 +50,7 @@ OPENROUTER_DECISIONS_URL = "https://openrouter.ai/api/alpha/decisions"
 #: Jev on OpenRouter. `typesafe/jev-1.13-20260917` is the pinned build.
 OPENROUTER_MODEL_DEFAULT = "typesafe/jev-1.13"
 
-#: Jev on TypeSafe directly.
+#: Jev on TypeSafe directly. Matches typesafe_sdk's own DEFAULT_MODEL.
 TYPESAFE_MODEL_DEFAULT = "jev-latest"
 
 DEFAULT_TIMEOUT_SECONDS = 60
@@ -52,7 +61,7 @@ class MissingKeyError(RuntimeError):
 
 
 class ProviderError(RuntimeError):
-    """Raised when a provider rejects a request."""
+    """Raised when a provider rejects a request or answers unintelligibly."""
 
 
 @dataclass(frozen=True)
@@ -62,7 +71,9 @@ class Provider:
     name: str
     model: str
     api_key: str
-    endpoint: str
+    #: Where to POST. `None` for the native path, where the SDK builds its own
+    #: URL and no endpoint of ours is consulted.
+    endpoint: str | None = None
 
     @property
     def label(self) -> str:
@@ -71,7 +82,7 @@ class Provider:
 
 
 class JevClient(Protocol):
-    """The one operation the examples need from a provider."""
+    """The operations the examples need from a provider."""
 
     def ask(self, state: Any, questions: dict[str, Any]) -> SystemOneResponse:
         """Answer every question against the state in a single request."""
@@ -79,9 +90,25 @@ class JevClient(Protocol):
     def close(self) -> None:
         """Release any underlying resources."""
 
+    def __enter__(self) -> JevClient:
+        """Enter a context manager."""
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        """Leave a context manager, releasing resources."""
+
 
 def _serialise_questions(questions: dict[str, Any]) -> dict[str, Any]:
     """Convert SDK question objects to their JSON form.
+
+    The dump must retain each question's `type` discriminator -- `choice`,
+    `noul` or `score` -- because that is what tells the service which primitive
+    to answer with. A test asserts this, since a silent change here would fail
+    only at runtime, against the live API.
 
     Args:
         questions: Question objects keyed by name.
@@ -114,7 +141,9 @@ class OpenRouterClient:
             The parsed response, identical in type to the native SDK's.
 
         Raises:
-            ProviderError: When OpenRouter returns a non-2xx response.
+            ProviderError: When OpenRouter is unreachable, returns a non-2xx
+                response, or answers with a body that is not a System One
+                response.
         """
         payload = {
             "model": self._provider.model,
@@ -122,7 +151,7 @@ class OpenRouterClient:
             "questions": _serialise_questions(questions),
         }
         request = urllib.request.Request(
-            self._provider.endpoint,
+            self._provider.endpoint or OPENROUTER_DECISIONS_URL,
             data=json.dumps(payload).encode(),
             headers={
                 "Authorization": f"Bearer {self._provider.api_key}",
@@ -141,7 +170,14 @@ class OpenRouterClient:
         except urllib.error.URLError as error:
             raise ProviderError(f"Could not reach OpenRouter: {error.reason}") from error
 
-        return SystemOneResponse.model_validate_json(body)
+        # A 2xx with an unexpected shape is still a provider failure, not a bug
+        # in the caller, so it leaves here as ProviderError like everything else.
+        try:
+            return SystemOneResponse.model_validate_json(body)
+        except pydantic.ValidationError as error:
+            raise ProviderError(
+                f"OpenRouter returned a body that is not a System One response: {body[:300]}"
+            ) from error
 
     def close(self) -> None:
         """Nothing to release: each request opens its own connection."""
@@ -150,13 +186,23 @@ class OpenRouterClient:
         """Enter a context manager."""
         return self
 
-    def __exit__(self, *exc_info: object) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
         """Leave a context manager."""
         self.close()
 
 
 class TypeSafeNativeClient:
-    """Call Jev through TypeSafe's own API, using the official SDK."""
+    """Call Jev through TypeSafe's own API, using the official SDK.
+
+    Untested against the live service: it needs an early-access key, which this
+    repository's author does not yet have. The SDK surface it uses is verified
+    against typesafe_sdk 0.7.0, but treat the path itself as unproven.
+    """
 
     def __init__(self, provider: Provider) -> None:
         """Build an SDK client for the provider."""
@@ -182,7 +228,12 @@ class TypeSafeNativeClient:
         """Enter a context manager."""
         return self
 
-    def __exit__(self, *exc_info: object) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
         """Leave a context manager."""
         self.close()
 
@@ -192,6 +243,11 @@ def resolve_provider(env: dict[str, str] | None = None) -> Provider:
 
     TypeSafe direct wins when its key is present, since an early-access key is
     the more authoritative path. Otherwise OpenRouter.
+
+    The two providers name their models in different namespaces -- `jev-latest`
+    against TypeSafe, `typesafe/jev-1.13` against OpenRouter -- so each reads
+    its own override variable. Sharing one would send an OpenRouter model id to
+    api.typesafe.ai, which rejects it.
 
     Args:
         env: Environment mapping to read. Defaults to `os.environ`.
@@ -208,9 +264,9 @@ def resolve_provider(env: dict[str, str] | None = None) -> Provider:
     if typesafe_key:
         return Provider(
             name="typesafe",
-            model=(env.get("JEV_MODEL") or "").strip() or TYPESAFE_MODEL_DEFAULT,
+            model=(env.get("TYPESAFE_MODEL") or "").strip() or TYPESAFE_MODEL_DEFAULT,
             api_key=typesafe_key,
-            endpoint="https://api.typesafe.ai/v1/systemone",
+            endpoint=None,
         )
 
     openrouter_key = (env.get("OPENROUTER_API_KEY") or "").strip()
@@ -233,14 +289,15 @@ def open_client(env: dict[str, str] | None = None) -> tuple[JevClient, Provider]
     """Load `.env`, resolve a provider, and build a client for it.
 
     Args:
-        env: Environment mapping to read. Defaults to the process environment
-            after `.env` has been loaded.
+        env: Environment mapping to read. When given, `.env` is left alone and
+            the process environment is not touched, which keeps tests isolated.
 
     Returns:
         A client and the provider it was configured for. Use the client as a
         context manager, or close it when done.
     """
-    load_dotenv(REPO_ROOT / ".env", override=False)
+    if env is None:
+        load_dotenv(REPO_ROOT / ".env", override=False)
     provider = resolve_provider(env)
     client: JevClient = (
         TypeSafeNativeClient(provider) if provider.name == "typesafe" else OpenRouterClient(provider)

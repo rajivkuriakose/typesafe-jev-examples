@@ -36,7 +36,5 @@ def describe(response: Any) -> str:
     for name, answer in sorted(getattr(response, "nouls", {}).items()):
         lines.append(f"  {name:22s} {answer.noul:.2f}")
     for name, answer in sorted(getattr(response, "scores", {}).items()):
-        confidence = getattr(answer, "confidence", None)
-        suffix = f"   conf {confidence:.2f}" if isinstance(confidence, float) else ""
-        lines.append(f"  {name:22s} {answer.score:.2f}{suffix}")
+        lines.append(f"  {name:22s} {answer.score:.2f}   conf {answer.confidence:.2f}")
     return "\n".join(lines)

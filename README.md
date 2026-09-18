@@ -5,8 +5,8 @@ model — runnable today through OpenRouter, without an early-access key.
 
 System One models do not generate prose. You send **state** and a map of named
 **questions**; you get back typed answers with calibrated probabilities. There is
-no parsing step and no chance of a schema error, so the interesting work moves
-out of prompt engineering and into ordinary code.
+no parsing step and no free-text-to-struct failure mode, so the interesting work
+moves out of prompt engineering and into ordinary code.
 
 ```python
 answer.choices["department"].choice       # "technical"
@@ -26,14 +26,19 @@ same model today:
 | | `typesafe/jev-1.13-20260917` (pinned) | |
 | **TypeSafe direct** | `jev-latest` | see typesafe.ai |
 
-Both speak the same protocol and return the identical typed response, so nothing
-above the client knows which answered. [`src/jevx/client.py`](src/jevx/client.py)
-picks a provider from your environment:
+Both speak the same protocol and return the same typed response, so nothing above
+the client knows which answered. [`src/jevx/client.py`](src/jevx/client.py) picks a
+provider from your environment:
 
 ```
 TYPESAFE_API_KEY set     ->  api.typesafe.ai          (wins if present)
 OPENROUTER_API_KEY set   ->  OpenRouter, typesafe/jev-1.13
 ```
+
+Everything here is verified against the OpenRouter path. The direct path is
+written against the SDK's documented surface but has not been run — it needs an
+early-access key. Each provider reads its own model override, `JEV_MODEL` and
+`TYPESAFE_MODEL`, because the two namespaces are disjoint.
 
 ## Quickstart
 
@@ -150,14 +155,18 @@ Two consequences, both handled in [`src/jevx/client.py`](src/jevx/client.py):
   `/v1/systemone` path, so `base_url` alone will not reach the decisions
   endpoint. The OpenRouter path posts directly.
 - **The response still parses as `SystemOneResponse`.** Both providers return
-  the identical typed object, so nothing above the client changes.
+  the same typed object, so nothing above the client changes. One asymmetry:
+  the SDK's internal decoder ignores answer types it does not recognise,
+  whereas parsing the body directly rejects them. This path is the stricter of
+  the two.
 
 Jev also does not appear in the default `/api/v1/models` catalog listing — its
 modality is `text->decisions` and `supported_parameters` is empty. Query
 `/api/v1/models/typesafe/jev-1.13/endpoints` directly.
 
-`make probe` re-runs this discovery against the live service, which is useful if
-OpenRouter moves the endpoint out of alpha.
+`make probe` re-runs the *endpoint* discovery against the live service, which is
+useful if OpenRouter moves it out of alpha. It does not re-check the catalog
+listing above.
 
 ## Layout
 

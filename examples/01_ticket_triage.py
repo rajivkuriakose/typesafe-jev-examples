@@ -18,7 +18,7 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass
 
-from typesafe_sdk import Choice, Noul, Score
+from typesafe_sdk import Choice, Noul, Score, SystemOneResponse
 
 from jevx import MissingKeyError, ProviderError, describe, header, open_client
 
@@ -78,7 +78,7 @@ QUESTION_NOTES = {
     "is_urgent": "Half of the priority rule; meaningless without impact.",
     "is_repeat_contact": "Annotation; a second miss is worse than a first.",
     "threatens_churn": "Overrides the department queue and sends the ticket to retention.",
-    "refund_requested": "Speculative: read only on the billing branch, asked of every ticket.",
+    "refund_requested": "Annotation; the agent needs it whether the queue is billing or retention.",
 }
 
 # ---------------------------------------------------------------------------
@@ -108,7 +108,32 @@ class Decision:
     reasons: tuple[str, ...]
 
 
-def route(response) -> Decision:
+def _annotations(response: SystemOneResponse) -> tuple[str, ...]:
+    """Collect signals the agent should see, whatever queue the ticket lands in.
+
+    These never change the queue by themselves. They are computed once and
+    attached to every outcome, because the queues that need context most --
+    retention, and anything sent to a human -- are exactly the ones that used
+    to arrive bare.
+
+    Args:
+        response: A System One response for a single ticket.
+
+    Returns:
+        Human-readable notes, possibly empty.
+    """
+    notes: list[str] = []
+    if response.nouls["refund_requested"].noul > LIKELY:
+        notes.append("refund requested")
+    if response.nouls["is_repeat_contact"].noul > LIKELY:
+        notes.append("repeat contact")
+    frustration = response.scores["frustration"].score
+    if frustration >= FRUSTRATION_THRESHOLD:
+        notes.append(f"frustration {frustration:.2f}")
+    return tuple(notes)
+
+
+def route(response: SystemOneResponse) -> Decision:
     """Turn typed answers into one routing decision.
 
     Args:
@@ -118,44 +143,35 @@ def route(response) -> Decision:
         The queue to route to, and the reasons that produced it.
     """
     department = response.choices["department"]
-    reasons: list[str] = []
+    notes = _annotations(response)
+
+    # Churn is department-independent -- retention owns the ticket whichever
+    # team it names -- so it is decided before the department is consulted at
+    # all. A customer threatening to leave must not be filed as "unsure which
+    # team owns this" merely because the department was ambiguous.
+    if response.nouls["threatens_churn"].noul > LIKELY:
+        return Decision("retention", ("churn threatened", *notes))
 
     if department.confidence < ROUTABLE_CONFIDENCE:
-        return Decision(
-            "human-triage",
-            (f"department confidence {department.confidence:.2f} below {ROUTABLE_CONFIDENCE}",),
-        )
-
-    # A churn threat is department-independent and outranks the normal queue.
-    if response.nouls["threatens_churn"].noul > LIKELY:
-        return Decision("retention", ("churn threatened",))
+        reason = f"department confidence {department.confidence:.2f} below {ROUTABLE_CONFIDENCE}"
+        return Decision("human-triage", (reason, *notes))
 
     if department.choice == "billing" and department.confidence < BILLING_CONFIDENCE:
-        return Decision(
-            "human-triage",
-            (
-                f"billing needs {BILLING_CONFIDENCE} confidence to auto-route, "
-                f"got {department.confidence:.2f}",
-            ),
+        reason = (
+            f"billing needs {BILLING_CONFIDENCE} confidence to auto-route, "
+            f"got {department.confidence:.2f}"
         )
+        return Decision("human-triage", (reason, *notes))
 
-    queue = f"{department.choice}/standard"
     urgent = response.nouls["is_urgent"].noul > LIKELY
     impacted = response.scores["business_impact"].score >= IMPACT_THRESHOLD
     if urgent and impacted:
-        queue = f"{department.choice}/priority"
-        reasons.append("urgent with active business impact")
+        return Decision(
+            f"{department.choice}/priority",
+            ("urgent with active business impact", *notes),
+        )
 
-    # Annotations: useful to the agent, but they do not move the ticket.
-    if department.choice == "billing" and response.nouls["refund_requested"].noul > LIKELY:
-        reasons.append("refund requested")
-    if response.nouls["is_repeat_contact"].noul > LIKELY:
-        reasons.append("repeat contact")
-    frustration = response.scores["frustration"].score
-    if frustration >= FRUSTRATION_THRESHOLD:
-        reasons.append(f"frustration {frustration:.2f}")
-
-    return Decision(queue, tuple(reasons))
+    return Decision(f"{department.choice}/standard", notes)
 
 
 def main() -> int:
@@ -180,7 +196,10 @@ def main() -> int:
                 print(describe(response))
                 trailer = f"   ({'; '.join(decision.reasons)})" if decision.reasons else ""
                 print(f"  → route: {decision.queue}{trailer}")
-                print(f"  tokens: {response.usage.input_tokens} in / {response.usage.output_tokens} out\n")
+                usage = response.usage
+                tokens_in = usage.input_tokens if usage.input_tokens is not None else "?"
+                tokens_out = usage.output_tokens if usage.output_tokens is not None else "?"
+                print(f"  tokens: {tokens_in} in / {tokens_out} out\n")
     except ProviderError as error:
         print(f"{error}\n", file=sys.stderr)
         return 1
