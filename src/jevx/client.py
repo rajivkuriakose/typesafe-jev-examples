@@ -56,9 +56,9 @@ TYPESAFE_MODEL_DEFAULT = "jev-latest"
 
 DEFAULT_TIMEOUT_SECONDS = 60
 
-#: Statuses worth sending the same request again for: rate limiting, and the
-#: gateway and origin errors a hosted service emits transiently. A 4xx other
-#: than 429 means the request itself is wrong, so retrying only costs money.
+#: Statuses worth sending the same request again for: timeouts, rate limiting,
+#: and the gateway and origin errors a hosted service emits transiently. Other
+#: 4xx statuses mean the request itself is wrong, so retrying only costs money.
 RETRY_STATUSES = frozenset({408, 429, 500, 502, 503, 504, 520, 521, 522, 524})
 
 #: Total attempts, not retries after the first.
@@ -211,12 +211,20 @@ class OpenRouterClient:
                 if not retryable or attempt == MAX_ATTEMPTS:
                     detail = error.read().decode()[:500]
                     raise ProviderError(f"OpenRouter returned {error.code}: {detail}") from error
-            except urllib.error.URLError as error:
+            except OSError as error:
+                # Deliberately broader than URLError. urllib only wraps the
+                # connect phase; a timeout while reading the response arrives as
+                # a bare TimeoutError, which is URLError's sibling under OSError,
+                # not its subclass. Catching only URLError lets that escape a
+                # worker thread as a raw traceback -- and over a long fan-out a
+                # read timeout is likelier than the gateway error that prompted
+                # retrying at all.
                 if attempt == MAX_ATTEMPTS:
-                    raise ProviderError(f"Could not reach OpenRouter: {error.reason}") from error
+                    reason = getattr(error, "reason", error)
+                    raise ProviderError(f"Could not reach OpenRouter: {reason}") from error
             time.sleep(BACKOFF_SECONDS * 2 ** (attempt - 1))
 
-        raise ProviderError("OpenRouter could not be reached")  # pragma: no cover
+        raise ProviderError("OpenRouter could not be reached")
 
     def close(self) -> None:
         """Nothing to release: each request opens its own connection."""

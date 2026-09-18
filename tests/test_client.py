@@ -9,17 +9,18 @@ with no key and no network.
 from __future__ import annotations
 
 import io
+import urllib.error
 
 import pytest
 from typesafe_sdk import Choice, Noul, Score
 
 from jevx.client import (
     OPENROUTER_DECISIONS_URL,
-    ProviderError,
     OPENROUTER_MODEL_DEFAULT,
     TYPESAFE_MODEL_DEFAULT,
     MissingKeyError,
     Provider,
+    ProviderError,
     _serialise_questions,
     resolve_provider,
 )
@@ -112,8 +113,6 @@ def test_serialisation_drops_unset_fields_rather_than_sending_nulls():
 
 
 def _http_error(code):
-    import urllib.error
-
     return urllib.error.HTTPError(
         url="https://openrouter.ai/api/alpha/decisions",
         code=code,
@@ -179,6 +178,88 @@ def test_a_client_error_is_not_retried(monkeypatch):
         client_module.OpenRouterClient(provider).ask({"a": 1}, {})
 
     assert len(attempts) == 1
+
+
+def test_a_read_timeout_is_retried(monkeypatch):
+    """urlopen raises bare TimeoutError from the read phase, not URLError.
+
+    TimeoutError and URLError are siblings under OSError, so catching only
+    URLError lets a timeout escape as a raw traceback from a worker thread.
+    Over a long fan-out this is likelier than the gateway error that motivated
+    retrying in the first place.
+    """
+    from jevx import client as client_module
+
+    attempts = []
+
+    def slow_then_fine(request, timeout=None):
+        attempts.append(1)
+        if len(attempts) < 2:
+            raise TimeoutError("timed out")
+        return _Body(GOOD_BODY)
+
+    monkeypatch.setattr(client_module.urllib.request, "urlopen", slow_then_fine)
+    monkeypatch.setattr(client_module.time, "sleep", lambda seconds: None)
+
+    provider = Provider(name="openrouter", model="m", api_key="k", endpoint="https://x.invalid")
+    response = client_module.OpenRouterClient(provider).ask({"a": 1}, {})
+
+    assert len(attempts) == 2
+    assert response.nouls["relevant"].noul == 0.8
+
+
+def test_a_persistent_timeout_becomes_a_provider_error(monkeypatch):
+    from jevx import client as client_module
+
+    def always_slow(request, timeout=None):
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr(client_module.urllib.request, "urlopen", always_slow)
+    monkeypatch.setattr(client_module.time, "sleep", lambda seconds: None)
+
+    provider = Provider(name="openrouter", model="m", api_key="k", endpoint="https://x.invalid")
+    with pytest.raises(ProviderError, match="reach OpenRouter"):
+        client_module.OpenRouterClient(provider).ask({"a": 1}, {})
+
+
+def test_a_connection_failure_is_retried(monkeypatch):
+    """The URLError branch retries unconditionally; pin that it does."""
+    from jevx import client as client_module
+
+    attempts = []
+
+    def refused(request, timeout=None):
+        attempts.append(1)
+        if len(attempts) < 3:
+            raise urllib.error.URLError("connection refused")
+        return _Body(GOOD_BODY)
+
+    monkeypatch.setattr(client_module.urllib.request, "urlopen", refused)
+    monkeypatch.setattr(client_module.time, "sleep", lambda seconds: None)
+
+    provider = Provider(name="openrouter", model="m", api_key="k", endpoint="https://x.invalid")
+    client_module.OpenRouterClient(provider).ask({"a": 1}, {})
+    assert len(attempts) == 3
+
+
+def test_backoff_doubles_and_never_sleeps_after_the_last_attempt(monkeypatch):
+    """Timing is documented behaviour, so assert it rather than stubbing it away."""
+    from jevx import client as client_module
+
+    slept: list[float] = []
+
+    def always_down(request, timeout=None):
+        raise _http_error(503)
+
+    monkeypatch.setattr(client_module.urllib.request, "urlopen", always_down)
+    monkeypatch.setattr(client_module.time, "sleep", slept.append)
+
+    provider = Provider(name="openrouter", model="m", api_key="k", endpoint="https://x.invalid")
+    with pytest.raises(ProviderError):
+        client_module.OpenRouterClient(provider).ask({"a": 1}, {})
+
+    base = client_module.BACKOFF_SECONDS
+    assert slept == [base * 2**n for n in range(client_module.MAX_ATTEMPTS - 1)]
 
 
 def test_retries_are_finite(monkeypatch):

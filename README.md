@@ -154,10 +154,16 @@ keyword baseline, then re-ranks them with Jev:
 ```
   top-1   keyword 67%–83%   re-ranked 100%
   top-3   keyword 67%–83%   re-ranked 100%
-          (keyword shown as a range: ties decide it, and a tie is not a ranking)
+          (ranges where ties decide the outcome: a tie is not a ranking)
 
   156 calls, 69,474 input tokens, ~$0.0029, 15.2s
 ```
+
+Both sides are reported as ranges. The re-ranker's happens to collapse to a
+single number because its scores are distinct where it counts — but it is
+computed the same way, because reporting one side as a range and the other as a
+point estimate would flatter the re-ranker by exactly the mechanism described
+below.
 
 **The range is the honest part, and the first version of this example got it
 wrong.** It reported a flat 67% and described the two improved queries as cases
@@ -165,9 +171,11 @@ where keyword search ranked the answer badly. It had not:
 
 ```
 q5  "our server was down for about an hour, did we permanently lose the events from that window"
+  gold p21 (What happens when your endpoint is unreachable)
   keyword scored 1, tied with 5 others (rank 1–6); id tie-break put it 4   ↑   re-ranked 1
 
 q6  "we are moving to another provider but I need everything we have first"
+  gold p24 (Exporting your data)
   keyword scored 0, tied with 17 others (rank 9–26); id tie-break put it 25   ↑   re-ranked 1
 ```
 
@@ -178,11 +186,12 @@ that as "rank 4" and "rank 25" silently converted *no signal* into *wrong
 answer* — which flattered the comparison. Hence `rank_bounds`, and hence the
 range.
 
-The real lesson survives, and is sharper than the one it replaces: on two of six
-questions, word overlap produced nothing to rank by at all, and the re-ranker
-turned that into a usable ordering. That is the failure mode paraphrase causes —
-q6's answer shares *no* content words with the question — and no amount of
-tuning a keyword scorer fixes it.
+The real lesson survives, and is sharper than the one it replaces. On q6 word
+overlap produced *nothing* to rank by — the answer shares no content words at
+all with the question — and on q5 it narrowed 26 articles to a six-way tie
+without choosing among them. In both cases the re-ranker turned an unranked set
+into a usable ordering. That is the failure mode paraphrase causes, and no
+amount of tuning a keyword scorer fixes it.
 
 Two further caveats, since this is a demonstration and not a benchmark:
 
@@ -192,12 +201,14 @@ Two further caveats, since this is a demonstration and not a benchmark:
   than rigged, but it is not neutral.
 - **Six queries reaching 100% means very little.** Four were already correct.
 
-**On provenance.** The 26 passages were written as a plausible help center before
-any baseline was run, and no passage was changed afterwards. The six queries were
-then written as customer phrasings of problems those articles solve — deliberately
-in a customer's words rather than the documentation's, which is what makes q5 and
-q6 hard for word matching. That is a real retrieval difficulty, not a manufactured
-one, but it is a choice, and you should weigh the result knowing it was made. For
+**On provenance.** The 26 passages and the 6 queries were both written before any
+baseline or re-ranker was run, and **neither a passage nor a query was changed
+afterwards** — the fixture is byte-identical to its first commit apart from its
+own explanatory note. The queries were written as customer phrasings of problems
+those articles solve, deliberately in a customer's words rather than the
+documentation's, which is what makes q5 and q6 hard for word matching. That is a
+real retrieval difficulty, not a manufactured one, but it is a choice, and you
+should weigh the result knowing it was made. For
 measured results on a real corpus with an established baseline, see TypeSafe's
 [re-ranking cookbook](https://docs.typesafe.ai/cookbooks/rerank_typesafe): top-1
 5% → 18% over 1,200 calls on legal retrieval.

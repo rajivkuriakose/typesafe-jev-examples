@@ -169,6 +169,11 @@ def rank_by_score(scores: dict[str, float]) -> list[str]:
     return sorted(scores, key=lambda key: (-scores[key], key))
 
 
+def _span(low: float, high: float) -> str:
+    """Render a hit-rate range, collapsing it when ties do not decide anything."""
+    return f"{low:.0%}" if low == high else f"{low:.0%}–{high:.0%}"
+
+
 def rank_bounds(scores: dict[str, float], target: str) -> tuple[int, int]:
     """The best and worst rank `target` could hold, given ties.
 
@@ -212,28 +217,6 @@ def hit_rate_bounds(
     return pessimistic / len(scores), optimistic / len(scores)
 
 
-def hit_at_k(ranking: list[str], gold: str, k: int) -> bool:
-    """Whether the right answer appears in the first `k` results."""
-    return gold in ranking[:k]
-
-
-def hit_rate(rankings: dict[str, list[str]], golds: dict[str, str], k: int) -> float:
-    """Fraction of queries whose right answer lands in the top `k`.
-
-    Args:
-        rankings: Ranked passage ids per query id.
-        golds: The correct passage id per query id.
-        k: How far down the list to look.
-
-    Returns:
-        A fraction between 0 and 1, or 0.0 when there are no queries.
-    """
-    if not rankings:
-        return 0.0
-    hits = sum(1 for query_id, ranking in rankings.items() if hit_at_k(ranking, golds[query_id], k))
-    return hits / len(rankings)
-
-
 def _score_with_usage(client: JevClient, query: Query, passage: Passage) -> tuple[float, int]:
     """Score one pair, also reporting what it cost in input tokens.
 
@@ -250,13 +233,19 @@ def _score_with_usage(client: JevClient, query: Query, passage: Passage) -> tupl
             },
             {"relevant": RELEVANCE},
         )
-        return response.nouls["relevant"].noul, response.usage.input_tokens or 0
     except ProviderError as error:
         raise ProviderError(f"{query.id}/{passage.id}: {error}") from error
+
+    # Narrow on purpose: `nouls` filters answers by type, so an answer of the
+    # wrong type is a missing key rather than a wrong value. Wrapping the call
+    # above in this guard too would misreport any KeyError from inside the SDK.
+    try:
+        answer = response.nouls["relevant"]
     except KeyError as error:
         raise ProviderError(
             f"{query.id}/{passage.id}: answer contained no 'relevant' noul"
         ) from error
+    return answer.noul, response.usage.input_tokens or 0
 
 
 def score_passage(client: JevClient, query: Query, passage: Passage) -> float:
@@ -376,12 +365,14 @@ def main() -> int:
         print()
 
     print("─" * 72)
+    # Both sides get the same treatment. Reporting the baseline as a range and
+    # the re-ranker as a point estimate would flatter the re-ranker by exactly
+    # the mechanism this example exists to warn about.
     for k in (1, 3):
-        low, high = hit_rate_bounds(keyword, golds, k)
-        after = hit_rate(reranked, golds, k)
-        spread = f"{low:.0%}" if low == high else f"{low:.0%}–{high:.0%}"
-        print(f"  top-{k}   keyword {spread}   re-ranked {after:.0%}")
-    print("          (keyword shown as a range: ties decide it, and a tie is not a ranking)")
+        keyword_span = _span(*hit_rate_bounds(keyword, golds, k))
+        reranked_span = _span(*hit_rate_bounds(scores, golds, k))
+        print(f"  top-{k}   keyword {keyword_span}   re-ranked {reranked_span}")
+    print("          (ranges where ties decide the outcome: a tie is not a ranking)")
 
     cost = (
         f", ~${total_tokens * INPUT_DOLLARS_PER_TOKEN:.4f}"

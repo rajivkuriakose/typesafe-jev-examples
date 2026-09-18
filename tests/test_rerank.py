@@ -8,6 +8,7 @@ is ordinary code and is pinned as such.
 
 from __future__ import annotations
 
+import re
 import threading
 from types import SimpleNamespace
 
@@ -138,29 +139,8 @@ def test_rank_by_score_breaks_ties_deterministically():
 # --- metrics ---------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("ranking", "gold", "k", "expected"),
-    [
-        (["p1", "p2", "p3"], "p1", 1, True),
-        (["p1", "p2", "p3"], "p2", 1, False),
-        (["p1", "p2", "p3"], "p3", 3, True),
-        (["p1", "p2", "p3"], "p3", 2, False),
-    ],
-)
-def test_hit_at_k(ranking, gold, k, expected):
-    assert rerank.hit_at_k(ranking, gold, k) is expected
-
-
-def test_hit_rate_is_the_fraction_of_queries_that_hit():
-    rankings = {"q1": ["a", "b"], "q2": ["b", "a"], "q3": ["b", "a"]}
-    golds = {"q1": "a", "q2": "a", "q3": "b"}
-    # q1 and q3 have their gold first; q2 does not.
-    assert rerank.hit_rate(rankings, golds, k=1) == pytest.approx(2 / 3)
-    assert rerank.hit_rate(rankings, golds, k=2) == pytest.approx(1.0)
-
-
-def test_hit_rate_of_nothing_is_zero_not_a_crash():
-    assert rerank.hit_rate({}, {}, k=1) == 0.0
+def test_hit_rate_bounds_of_nothing_is_zero_not_a_crash():
+    assert rerank.hit_rate_bounds({}, {}, k=1) == (0.0, 0.0)
 
 
 # --- the question itself ---------------------------------------------------
@@ -264,7 +244,7 @@ def test_a_failing_pair_names_itself(corpus):
     with pytest.raises(ProviderError) as caught:
         rerank.score_corpus(StubClient(explode), corpus)
     message = str(caught.value)
-    assert "/" in message, "expected a query/passage identifier in the message"
+    assert re.search(r"q\d+/p\d+", message), f"no query/passage id in: {message}"
     assert "upstream said no" in message
 
 
@@ -288,10 +268,11 @@ def test_an_answer_without_the_noul_is_a_provider_error(corpus):
 def test_jev_ranks_a_paraphrased_answer_above_a_word_match(corpus):
     """q6: the answer shares no vocabulary with the question, and a decoy does.
 
-    Keyword overlap scores the gold passage zero here and gives p13 a point for
-    the stray phrase "identity provider". This is the case the whole example
-    rests on -- not the SSO pair, where the baseline was never actually fooled
-    -- so it is the one worth two real calls.
+    Keyword overlap scores the gold passage zero here and gives p13 two points,
+    for "provider" and "have" -- the second being the short stopword list the
+    scorer's own docstring admits to. This is the case the whole example rests
+    on, not the SSO pair where the baseline was never actually fooled, so it is
+    the one worth two real calls.
     """
     from jevx import open_client
     from jevx.client import MissingKeyError

@@ -1,9 +1,9 @@
 """Fixtures and loaders shared by the example tests.
 
-The routing policy is ordinary code. It takes typed answers and returns a
-decision, so it can be tested directly by handing it answers. These fakes
-mirror the attribute surface of `typesafe_sdk`'s response objects -- the only
-part of the SDK the policy actually touches.
+`load_example` imports the numbered example modules, whose filenames are not
+valid identifiers. The `Fake*` dataclasses mirror the attribute surface of
+`typesafe_sdk`'s response objects -- the only part of the SDK the triage policy
+touches -- so that policy can be tested by handing it answers directly.
 """
 
 from __future__ import annotations
