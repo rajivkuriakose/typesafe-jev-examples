@@ -281,7 +281,12 @@ src/jevx/client.py             provider selection and transport
 src/jevx/report.py             printing helpers
 scripts/probe_openrouter.py    discover how OpenRouter serves Jev
 tests/                         offline tests, plus one `live` test
+docs/HANDOFF.md                design decisions, gotchas, and what's next
 ```
+
+Adding an example? [`docs/HANDOFF.md`](docs/HANDOFF.md) collects the API details
+that were expensive to work out, the standard these examples are held to, and a
+sketch of the next one.
 
 ## Reference
 
